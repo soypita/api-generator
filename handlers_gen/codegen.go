@@ -49,11 +49,12 @@ func main() {
 	fmt.Fprintln(out, `import "encoding/json"`)
 	fmt.Fprintln(out, `import "errors"`)
 	fmt.Fprintln(out, `import "fmt"`)
+	fmt.Fprintln(out, `import "strconv"`)
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, `type DefaultResponseWrapper struct {`)
 	fmt.Fprintln(out, "	Error		string "+"`"+`json:"error"`+"`")
-	fmt.Fprintln(out, "	Response	interface{}"+"`"+`json:"response"`+"`")
+	fmt.Fprintln(out, "	Response	interface{}"+"`"+`json:"response,omitempty"`+"`")
 	fmt.Fprintln(out, "}")
 	fmt.Fprintln(out)
 
@@ -180,11 +181,11 @@ func buildValidationParamCode(out *os.File, currType *ast.TypeSpec) {
 
 		variableFieldName := strings.ToLower(filed.Names[0].Name)
 
-		fmt.Fprintln(out, `	`+variableFieldName+`, ok := r.URL.Query()["`+fieldName+`"]`)
+		fmt.Fprintln(out, `	`+variableFieldName+` := r.FormValue("`+fieldName+`")`)
 
 		// check if field required or not
 		if valParams.isRequired {
-			fmt.Fprintln(out, `	if ok == false {`)
+			fmt.Fprintln(out, `	if `+variableFieldName+` == "" {`)
 			fmt.Fprintln(out, `		return ApiError{http.StatusBadRequest, fmt.Errorf("%s must me not empty", "`+fieldName+`")}`)
 			fmt.Fprintln(out, `	}`)
 		}
@@ -193,6 +194,11 @@ func buildValidationParamCode(out *os.File, currType *ast.TypeSpec) {
 
 		switch filedType {
 		case "string":
+			if valParams.defaultValue != "" {
+				fmt.Fprintln(out, "	if "+variableFieldName+` == "" {`)
+				fmt.Fprintln(out, "		"+variableFieldName+" = "+`"`+valParams.defaultValue+`"`)
+				fmt.Fprintln(out, "	}")
+			}
 			if len(valParams.enumValues) > 0 {
 				fmt.Fprintln(out, "	isValueInEnum := false")
 				fmt.Fprint(out, "	validatedEnum := []string{")
@@ -202,7 +208,40 @@ func buildValidationParamCode(out *os.File, currType *ast.TypeSpec) {
 				fmt.Fprint(out, "}")
 				fmt.Fprintln(out)
 				fmt.Fprintln(out, "	for _, val := range validatedEnum {")
-				fmt.Fprintln(out, "		if "+variableFieldName+"[0] == val {")
+				fmt.Fprintln(out, "		if "+variableFieldName+" == val {")
+				fmt.Fprintln(out, "			isValueInEnum = true")
+				fmt.Fprintln(out, "		}")
+				fmt.Fprintln(out, "	}")
+				fmt.Fprintln(out, "	if isValueInEnum == false {")
+				fmt.Fprint(out, `		return ApiError{http.StatusBadRequest, fmt.Errorf("%s must be one of [`+
+					strings.Join(valParams.enumValues, ", ")+
+					`]", "`+fieldName+`")}`)
+				fmt.Fprintln(out, "	}")
+			}
+			if valParams.min != 0 {
+				fmt.Fprintln(out, "	if len("+variableFieldName+`) < `+strconv.Itoa(valParams.min)+` {`)
+				fmt.Fprintln(out, `		return ApiError{http.StatusBadRequest, fmt.Errorf("%s len must be >= %d", "`+fieldName+`",`+strconv.Itoa(valParams.min)+`)}`)
+				fmt.Fprintln(out, `	}`)
+			}
+
+			// assign fieldValue to struct
+			fmt.Fprintln(out, "	srv."+filed.Names[0].Name+" = "+variableFieldName)
+		case "int":
+			if valParams.defaultValue != "" {
+				fmt.Fprintln(out, "	if "+variableFieldName+` == "" {`)
+				fmt.Fprintln(out, "		"+variableFieldName+" = "+`"`+valParams.defaultValue+`"`)
+				fmt.Fprintln(out, "	}")
+			}
+			if len(valParams.enumValues) > 0 {
+				fmt.Fprintln(out, "	isValueInEnum := false")
+				fmt.Fprint(out, "	validatedEnum := []string{")
+				for _, val := range valParams.enumValues {
+					fmt.Fprint(out, `"`+val+`",`)
+				}
+				fmt.Fprint(out, "}")
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, "	for _, val := range validatedEnum {")
+				fmt.Fprintln(out, "		if "+variableFieldName+" == val {")
 				fmt.Fprintln(out, "			isValueInEnum = true")
 				fmt.Fprintln(out, "		}")
 				fmt.Fprintln(out, "	}")
@@ -212,40 +251,69 @@ func buildValidationParamCode(out *os.File, currType *ast.TypeSpec) {
 					`]",`+fieldName+`)}`)
 				fmt.Fprintln(out, "	}")
 			}
-			if valParams.defaultValue != "" {
-				fmt.Fprintln(out, "	if "+variableFieldName+`[0] == "" {`)
-				fmt.Fprintln(out, "		"+variableFieldName+"[0] = "+`"`+valParams.defaultValue+`"`)
-				fmt.Fprintln(out, "	}")
-			}
-			if valParams.min != 0 {
-				fmt.Fprintln(out, "	if len("+variableFieldName+`[0]) < `+strconv.Itoa(valParams.min)+` {`)
-				fmt.Fprintln(out, `		return ApiError{http.StatusBadRequest, fmt.Errorf("%s must be >= %d", "`+fieldName+`",`+strconv.Itoa(valParams.min)+`)}`)
+			fmt.Fprintln(out, "	int"+filed.Names[0].Name+", err := strconv.Atoi("+variableFieldName+")")
+			fmt.Fprintln(out, "	if err != nil {")
+			fmt.Fprintln(out, `		return ApiError{http.StatusBadRequest, fmt.Errorf("%s must be int", "`+fieldName+`")}`)
+			fmt.Fprintln(out, "	}")
+
+			fmt.Fprintln(out, "	if int"+filed.Names[0].Name+` < `+strconv.Itoa(valParams.min)+` {`)
+			fmt.Fprintln(out, `		return ApiError{http.StatusBadRequest, fmt.Errorf("%s must be >= %d", "`+fieldName+`",`+strconv.Itoa(valParams.min)+`)}`)
+			fmt.Fprintln(out, `	}`)
+
+			if valParams.max != 0 {
+				fmt.Fprintln(out, "	if int"+filed.Names[0].Name+`  > `+strconv.Itoa(valParams.max)+` {`)
+				fmt.Fprintln(out, `		return ApiError{http.StatusBadRequest, fmt.Errorf("%s must be <= %d", "`+fieldName+`",`+strconv.Itoa(valParams.max)+`)}`)
 				fmt.Fprintln(out, `	}`)
 			}
-		case "int":
+			fmt.Fprintln(out, "	srv."+filed.Names[0].Name+" = int"+filed.Names[0].Name)
+
 		default:
 			panic("only string and int fields available")
 		}
-
-		//if filed.Type.(*ast.Ident).Name == "int" {
-		//
-		//}
 	}
+	fmt.Fprintln(out, "	return nil")
 	fmt.Fprintln(out, "}")
 	fmt.Fprintln(out)
 }
 
 func prepeareServeHttpFuncForStructs(out *os.File, structTypesToFunc map[string][]FuncGeneratorDescription) {
+	defaultMethod := ""
 	for key, val := range structTypesToFunc {
 		fmt.Fprintln(out, "func (srv *"+key+") ServeHTTP(w http.ResponseWriter, r *http.Request) {")
 		fmt.Fprintln(out, "	switch r.URL.Path {")
 		for _, val := range val {
+			if val.Method != "" {
+				defaultMethod = val.Method
+			}
 			fmt.Fprintln(out, `	case "`+val.Url+`":`)
+			if defaultMethod != "" {
+				fmt.Fprintln(out, `		if r.Method != "`+defaultMethod+`" {`)
+				fmt.Fprintln(out, "			w.WriteHeader(http.StatusNotAcceptable)")
+				fmt.Fprintln(out, "			response := DefaultResponseWrapper{}")
+				fmt.Fprintln(out, `			response.Error = "bad method"`)
+				fmt.Fprintln(out, `			payload, _ := json.Marshal(response)`)
+				fmt.Fprintln(out, "			w.Write(payload)")
+				fmt.Fprintln(out, "			return")
+				fmt.Fprintln(out, "		}")
+			}
+			if val.Auth {
+				fmt.Fprintln(out, `		if r.Header.Get("X-Auth") != "100500" {`)
+				fmt.Fprintln(out, "			w.WriteHeader(http.StatusForbidden)")
+				fmt.Fprintln(out, "			response := DefaultResponseWrapper{}")
+				fmt.Fprintln(out, `			response.Error = "unauthorized"`)
+				fmt.Fprintln(out, `			payload, _ := json.Marshal(response)`)
+				fmt.Fprintln(out, "			w.Write(payload)")
+				fmt.Fprintln(out, "			return")
+				fmt.Fprintln(out, "		}")
+			}
 			fmt.Fprintln(out, "		srv.Wrap"+val.funcName+"(w, r)")
 		}
 		fmt.Fprintln(out, "	default:")
 		fmt.Fprintln(out, "		w.WriteHeader(http.StatusNotFound)")
-		fmt.Fprintln(out, "		json.NewEncoder(w).Encode("+"`{"+`"error": "unknown method"}`+"`)")
+		fmt.Fprintln(out, "		response := DefaultResponseWrapper{}")
+		fmt.Fprintln(out, `		response.Error = "unknown method"`)
+		fmt.Fprintln(out, `		payload, _ := json.Marshal(response)`)
+		fmt.Fprintln(out, "		w.Write(payload)")
 		fmt.Fprintln(out, "	}")
 		fmt.Fprintln(out, "}")
 
@@ -255,24 +323,36 @@ func prepeareServeHttpFuncForStructs(out *os.File, structTypesToFunc map[string]
 			fmt.Fprintln(out, "	ctx := r.Context()")
 			fmt.Fprintln(out, "	inParam := "+val.inputBusinessParamName+"{}")
 			fmt.Fprintln(out, "	err := inParam.ValidateParams(r)")
-			fmt.Fprintln(out, "	var e *ApiError")
-			fmt.Fprintln(out, "	if errors.Is(err, e) {")
+			fmt.Fprintln(out, "	var e ApiError")
+			fmt.Fprintln(out, "	if errors.As(err, &e) {")
 			fmt.Fprintln(out, "		w.WriteHeader(e.HTTPStatus)")
-			fmt.Fprintln(out, `		json.NewEncoder(w).Encode(fmt.Errorf(`+"`{"+`"error": %s}`+"`, e.Error()"+"))")
+			fmt.Fprintln(out, "		response := DefaultResponseWrapper{}")
+			fmt.Fprintln(out, "		response.Error = e.Error()")
+			fmt.Fprintln(out, `		payload, _ := json.Marshal(response)`)
+			fmt.Fprintln(out, "		w.Write(payload)")
 			fmt.Fprintln(out, "		return")
 			fmt.Fprintln(out, "	}")
 			fmt.Fprintln(out, "	res, err := srv."+val.funcName+"(ctx, inParam)")
-			fmt.Fprintln(out, "	if errors.Is(err, e) {")
+			fmt.Fprintln(out, "	if errors.As(err, &e) {")
 			fmt.Fprintln(out, "		w.WriteHeader(e.HTTPStatus)")
-			fmt.Fprintln(out, `		json.NewEncoder(w).Encode(fmt.Errorf(`+"`{"+`"error": %s}`+"`, e.Error()"+"))")
+			fmt.Fprintln(out, "		response := DefaultResponseWrapper{}")
+			fmt.Fprintln(out, "		response.Error = e.Error()")
+			fmt.Fprintln(out, `		payload, _ := json.Marshal(response)`)
+			fmt.Fprintln(out, "		w.Write(payload)")
 			fmt.Fprintln(out, "		return")
-			fmt.Fprintln(out, "	} else {")
+			fmt.Fprintln(out, "	} else if err != nil {")
 			fmt.Fprintln(out, "		w.WriteHeader(http.StatusInternalServerError)")
-			fmt.Fprintln(out, `		json.NewEncoder(w).Encode(fmt.Errorf(`+"`{"+`"error": %s}`+"`, err.Error()"+"))")
+			fmt.Fprintln(out, "		response := DefaultResponseWrapper{}")
+			fmt.Fprintln(out, "		response.Error = err.Error()")
+			fmt.Fprintln(out, `		payload, _ := json.Marshal(response)`)
+			fmt.Fprintln(out, "		w.Write(payload)")
+			fmt.Fprintln(out, "		return")
 			fmt.Fprintln(out, "	}")
 			fmt.Fprintln(out, "	response := DefaultResponseWrapper{}")
 			fmt.Fprintln(out, "	response.Response = res")
-			fmt.Fprintln(out, "	json.NewEncoder(w).Encode(response)")
+			fmt.Fprintln(out, "	payload, _ := json.Marshal(response)")
+			fmt.Fprintln(out, "	w.WriteHeader(http.StatusOK)")
+			fmt.Fprintln(out, "	w.Write(payload)")
 			fmt.Fprintln(out, "}")
 		}
 		fmt.Fprintln(out)
